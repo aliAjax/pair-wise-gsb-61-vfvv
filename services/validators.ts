@@ -1,4 +1,4 @@
-import type { ApprovalProject, ProjectInput } from '~/types/certification';
+import type { ApprovalProject, ProjectInput, SupplementToken } from '~/types/certification';
 
 export function validateProjectInput(input: ProjectInput) {
   const errors: Partial<Record<keyof ProjectInput, string>> = {};
@@ -42,5 +42,24 @@ export function validateEvidenceUpgrade(project: ApprovalProject, evidenceIds: s
   if (note.trim().length < 6) errors.push('批量补件说明至少 6 个字符');
   const selected = project.evidence.filter((item) => evidenceIds.includes(item.id));
   if (!selected.length) errors.push('所选证据不属于当前项目');
+  return errors;
+}
+
+/** 续办凭据提交前的静态检查：凭据自身必须仍记录着至少一项当前仍可补件的证据 */
+export function validateSupplementCommit(project: ApprovalProject, token: SupplementToken) {
+  const errors: string[] = [];
+  if (token.status === 'pending_check') errors.push(token.pendingReason || '凭据已失效，请先核对基线后续办');
+  if (!token.selectedEvidenceIds.length) errors.push('至少选择一项待补件证据');
+  if (token.note.trim().length < 6) errors.push('补件说明至少 6 个字符');
+  const appliedIds = new Set(token.applied.map((change) => change.evidenceId));
+  const stillSupplementable = project.evidence.some(
+    (item) =>
+      token.selectedEvidenceIds.includes(item.id) &&
+      !appliedIds.has(item.id) &&
+      ['missing', 'rejected', 'resubmit'].includes(item.status)
+  );
+  if (!stillSupplementable && appliedIds.size === 0) {
+    errors.push('所选证据均已不在待补件状态，没有可推进的补件');
+  }
   return errors;
 }

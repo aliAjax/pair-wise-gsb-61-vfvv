@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import type { EvidenceItem, RegulationItem } from '~/types/certification';
 
-const props = defineProps<{
-  regulations: RegulationItem[];
-  evidence: EvidenceItem[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    regulations: RegulationItem[];
+    evidence: EvidenceItem[];
+    /** 挂在未完成补件凭据上、暂不计入覆盖的证据 */
+    pendingEvidence?: EvidenceItem[];
+  }>(),
+  { pendingEvidence: () => [] }
+);
 
 const expanded = ref<string[]>(props.regulations.map((item) => item.id));
 
@@ -16,6 +21,10 @@ function toggle(id: string) {
 
 function linkedEvidence(id: string) {
   return props.evidence.filter((item) => item.regulationId === id);
+}
+
+function linkedPending(id: string) {
+  return props.pendingEvidence.filter((item) => item.regulationId === id);
 }
 </script>
 
@@ -46,7 +55,7 @@ function linkedEvidence(id: string) {
       <div v-if="expanded.includes(regulation.id)" class="border-t border-slate-100 bg-slate-50 px-4 py-4">
         <div class="mb-3">
           <div class="mb-1 flex items-center justify-between gap-3 text-xs text-slate-500">
-            <span>配置覆盖</span><span>{{ regulation.coverage }}%</span>
+            <span>配置覆盖（仅统计已完成凭据）</span><span>{{ regulation.coverage }}%</span>
           </div>
           <UProgress :value="regulation.coverage" size="xs" />
         </div>
@@ -72,7 +81,24 @@ function linkedEvidence(id: string) {
             <StatusBadge :status="item.status" />
           </div>
         </div>
-        <p v-else class="text-sm text-slate-500">尚未关联证据文件。</p>
+        <p v-else class="text-sm text-slate-500">尚未关联已生效的证据文件。</p>
+
+        <div v-if="linkedPending(regulation.id).length" class="mt-3 space-y-2 border-t border-dashed border-amber-300 pt-3">
+          <p class="text-xs font-medium text-amber-800">以下证据来自未完成补件凭据，暂不计入覆盖：</p>
+          <div
+            v-for="item in linkedPending(regulation.id)"
+            :key="item.id"
+            class="flex flex-wrap items-center justify-between gap-3 border border-amber-200 bg-amber-50 px-3 py-2 opacity-80"
+          >
+            <div>
+              <p class="text-sm font-medium">{{ item.name }}</p>
+              <p class="mt-1 text-xs text-slate-500">
+                文件版本 {{ item.version }} · 软件 {{ item.softwareVersion }} · 凭据 {{ item.supplementTokenId }}
+              </p>
+            </div>
+            <UBadge color="amber" variant="soft">凭据待完成</UBadge>
+          </div>
+        </div>
       </div>
     </section>
   </div>

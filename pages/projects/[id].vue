@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { EvidenceStatus, ProjectInput, ProjectStatus } from '~/types/certification';
-import { validateEvidenceUpgrade, validateProjectInput, validateSubmission } from '~/services/validators';
+import { supplementableStatuses } from '~/types/certification';
+import { validateProjectInput, validateSubmission, validateSupplementCommit } from '~/services/validators';
+import { useSupplementCredential } from '~/composables/useSupplementCredential';
 import { useCertificationStore } from '~/stores/certification';
 
 const route = useRoute();
@@ -45,8 +47,12 @@ watch(
 const transitionStatus = ref<ProjectStatus>('under_review');
 const transitionReason = ref('');
 const editReason = ref('');
-const supplementNote = ref('');
-const selectedEvidence = ref<string[]>([]);
+
+const supplementCredential = useSupplementCredential(project, { actor: () => project.value?.applicant ?? '申请主体' });
+
+const supplementableEvidence = computed(() =>
+  project.value ? project.value.evidence.filter((evidence) => supplementableStatuses.includes(evidence.status)) : []
+);
 
 const tabs = [
   { label: '证据文件', icon: 'i-heroicons-document-text' },
@@ -112,17 +118,36 @@ function updateEvidence(evidenceId: string, status: EvidenceStatus) {
   message.value = '证据审阅状态已更新。';
 }
 
-function bulkSupplement() {
+async function submitSupplement() {
+  message.value = '';
+  error.value = '';
   if (!project.value) return;
-  const errors = validateEvidenceUpgrade(project.value, selectedEvidence.value, supplementNote.value);
+  const token = supplementCredential.token.value;
+  if (!token) {
+    error.value = '请先勾选待补件证据并填写说明，建立可续办的提交凭据';
+    return;
+  }
+  if (token.status === 'pending_check') {
+    error.value = `凭据已失效，停在待核对：${token.pendingReason}。请核对基线后续办，已选证据和说明已保留。`;
+    return;
+  }
+  const errors = validateSupplementCommit(project.value, token);
   if (errors.length) {
     error.value = errors.join('；');
     return;
   }
-  const count = store.bulkSupplement(id, selectedEvidence.value, supplementNote.value);
-  selectedEvidence.value = [];
-  supplementNote.value = '';
-  message.value = `已将 ${count} 项证据更新至当前软件基线并重新提交。`;
+  const outcome = await supplementCredential.commit();
+  if (!outcome) return;
+  if (outcome.status === 'complete') {
+    message.value = `凭据 ${token.id} 提交完成：${outcome.applied.length} 项证据更新至当前基线并重新提交${
+      outcome.skipped.length ? `，${outcome.skipped.length} 项已被他人处理未覆盖` : ''
+    }。`;
+  } else if (outcome.status === 'pending_check') {
+    error.value = `提交被拦截：${outcome.pendingReason}。已选证据与说明保留，可核对后续办。`;
+  } else if (outcome.error) {
+    error.value = outcome.error;
+  }
+  if (supplementCredential.errorMessage.value) error.value = supplementCredential.errorMessage.value;
 }
 </script>
 
@@ -242,29 +267,84 @@ function bulkSupplement() {
         </div>
       </div>
 
-      <div class="border border-slate-200 bg-white p-5">
-        <h2 class="font-semibold">批量补件</h2>
-        <p class="mt-1 text-xs text-slate-500">将缺失、被拒或待重交证据更新到当前软件基线。</p>
-        <form class="mt-4 space-y-4" @submit.prevent="bulkSupplement">
-          <label
-            v-for="item in project.evidence.filter((evidence) => ['rejected', 'resubmit', 'missing'].includes(evidence.status))"
-            :key="item.id"
-            class="flex gap-3 border border-slate-200 p-3"
-          >
-            <input v-model="selectedEvidence" type="checkbox" :value="item.id" class="mt-1" />
-            <span>
-              <span class="block text-sm font-medium">{{ item.name }}</span>
-              <span class="mt-1 block text-xs text-slate-500">{{ item.id }} · 当前 SW {{ item.softwareVersion }}</span>
-            </span>
-          </label>
-          <p v-if="!project.evidence.some((evidence) => ['rejected', 'resubmit', 'missing'].includes(evidence.status))" class="text-sm text-slate-500">
-            当前没有待补件证据。
+      <div class="space-y-4">
+        <div class="border border-slate-200 bg-white p-5">
+          <h2 class="font-semibold">批量补件凭据</h2>
+          <p class="mt-1 text-xs text-slate-500">
+            勾选后凭据立即记住维护版本、软件版本和证据清单；其他标签页改动基线后，凭据立即失效并停在待核对，已选证据与说明保留。
           </p>
-          <UFormGroup label="补件说明">
-            <UTextarea v-model="supplementNote" :rows="3" placeholder="说明已完成的测试、配置覆盖和版本更新" />
-          </UFormGroup>
-          <UButton type="submit" color="primary" class="w-full justify-center">批量更新并重新提交</UButton>
-        </form>
+          <form class="mt-4 space-y-4" @submit.prevent="submitSupplement">
+            <label
+              v-for="item in supplementableEvidence"
+              :key="item.id"
+              class="flex gap-3 border border-slate-200 p-3"
+            >
+              <input v-model="supplementCredential.selectedEvidence.value" type="checkbox" :value="item.id" class="mt-1" />
+              <span>
+                <span class="block text-sm font-medium">{{ item.name }}</span>
+                <span class="mt-1 block text-xs text-slate-500">{{ item.id }} · 当前 SW {{ item.softwareVersion }}</span>
+              </span>
+            </label>
+            <p v-if="!supplementableEvidence.length" class="text-sm text-slate-500">
+              当前没有待补件证据；可能已被另一个标签页处理。
+            </p>
+            <UFormGroup label="补件说明（凭据保存，可续办）">
+              <UTextarea v-model="supplementCredential.note.value" :rows="3" placeholder="说明已完成的测试、配置覆盖和版本更新" />
+            </UFormGroup>
+            <div class="flex flex-wrap gap-2">
+              <UButton
+                type="submit"
+                color="primary"
+                class="w-full justify-center sm:w-auto"
+                :loading="supplementCredential.committing.value"
+                :disabled="!supplementCredential.canSubmit.value"
+              >
+                提交补件凭据
+              </UButton>
+              <UButton
+                v-if="supplementCredential.tokenStatus.value === 'pending_check'"
+                type="button"
+                color="amber"
+                variant="soft"
+                @click="supplementCredential.recheck()"
+              >
+                核对基线后续办
+              </UButton>
+            </div>
+            <p v-if="supplementCredential.tokenStatus.value === 'pending_check'" class="text-xs text-amber-800">
+              凭据已停在待核对：{{ supplementCredential.pendingReason.value }}
+            </p>
+          </form>
+        </div>
+
+        <SupplementCredentialPanel
+          v-if="supplementCredential.token.value"
+          :project="project"
+          :credential="supplementCredential"
+        />
+
+        <div class="border border-slate-200 bg-white p-5">
+          <h2 class="font-semibold">凭据历史</h2>
+          <p class="mt-1 text-xs text-slate-500">只有已完成凭据产生的补件才计入法规覆盖与审计导出。</p>
+          <ul v-if="project.supplementTokens.length" class="mt-3 space-y-2 text-sm">
+            <li v-for="tokenItem in project.supplementTokens" :key="tokenItem.id" class="border border-slate-200 p-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-mono text-xs">{{ tokenItem.id }}</span>
+                <UBadge
+                  :color="tokenItem.status === 'complete' ? 'green' : tokenItem.status === 'pending_check' ? 'amber' : 'gray'"
+                  variant="soft"
+                >
+                  {{ { draft: '草拟中', ready: '可提交', pending_check: '待核对', complete: '已完成' }[tokenItem.status] }}
+                </UBadge>
+              </div>
+              <p class="mt-1 text-xs text-slate-500">
+                记住基线 {{ tokenItem.baselineMaintenanceVersion }} / SW {{ tokenItem.baselineSoftwareVersion }}
+                · 已选 {{ tokenItem.selectedEvidenceIds.length }} 项 · 已落账 {{ tokenItem.applied.length }} 项
+              </p>
+            </li>
+          </ul>
+          <p v-else class="mt-3 text-xs text-slate-500">尚无补件凭据。</p>
+        </div>
       </div>
     </section>
 

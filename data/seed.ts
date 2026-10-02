@@ -190,7 +190,8 @@ export const seedProjects: ApprovalProject[] = [
         detail: '软件基线更新为 8.4.1，需重新确认受影响法规项。',
         createdAt: '2026-09-27T04:10:00.000Z'
       }
-    ]
+    ],
+    supplementTokens: []
   },
   {
     id: 'TA-2026-109',
@@ -256,7 +257,8 @@ export const seedProjects: ApprovalProject[] = [
         detail: '能耗证据软件版本需更新后重新抽样测试。',
         createdAt: '2026-09-26T02:15:00.000Z'
       }
-    ]
+    ],
+    supplementTokens: []
   },
   {
     id: 'TA-2026-092',
@@ -310,7 +312,8 @@ export const seedProjects: ApprovalProject[] = [
         detail: '全部适用范围证据通过审阅，提交包版本锁定。',
         createdAt: '2026-08-30T09:20:00.000Z'
       }
-    ]
+    ],
+    supplementTokens: []
   },
   {
     id: 'TA-2026-120',
@@ -362,6 +365,7 @@ export const seedProjects: ApprovalProject[] = [
         detail: '创建认证证据包草稿。',
         createdAt: '2026-09-27T12:30:00.000Z'
       }
-    ]
+    ],
+    supplementTokens: []
   }
 ];
