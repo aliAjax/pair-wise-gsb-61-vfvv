@@ -16,6 +16,24 @@ export function validateProjectInput(input: ProjectInput) {
   return errors;
 }
 
+/**
+ * 证据是否被法规覆盖/审计认可：
+ * 审阅人直接接受（accepted）的证据始终有效；
+ * 补件提交上来的证据只认挂在「已完成凭据」上的结果。
+ */
+export function isCredentialEvidence(
+  item: { status: string; submissionTokenId?: string },
+  completedTokenIds: Set<string>
+) {
+  if (item.status === 'accepted') return true;
+  return Boolean(item.submissionTokenId && completedTokenIds.has(item.submissionTokenId));
+}
+
+/** 只保留被已完成凭据认可的证据。 */
+export function credentialEvidence(project: ApprovalProject, completedTokenIds: Set<string>) {
+  return project.evidence.filter((item) => isCredentialEvidence(item, completedTokenIds));
+}
+
 export function validateSubmission(project: ApprovalProject) {
   const issues: string[] = [];
   const requiredRegulations = project.regulations.filter((item) => item.required);
@@ -36,11 +54,21 @@ export function validateSubmission(project: ApprovalProject) {
   return issues;
 }
 
-export function validateEvidenceUpgrade(project: ApprovalProject, evidenceIds: string[], note: string) {
-  const errors: string[] = [];
-  if (!evidenceIds.length) errors.push('至少选择一项待补件证据');
-  if (note.trim().length < 6) errors.push('批量补件说明至少 6 个字符');
-  const selected = project.evidence.filter((item) => evidenceIds.includes(item.id));
-  if (!selected.length) errors.push('所选证据不属于当前项目');
-  return errors;
+/**
+ * 批准前阻断检查：在常规检查之外，要求所有非「审阅人直接接受」的证据
+ * 都能对应到一张已完成的补件凭据。
+ */
+export function validateSubmissionWithCredentials(project: ApprovalProject, completedTokenIds: Set<string>) {
+  const issues = validateSubmission(project);
+  const uncreditedSubmitted = project.evidence.filter(
+    (item) => item.status === 'submitted' && !(item.submissionTokenId && completedTokenIds.has(item.submissionTokenId))
+  );
+  if (uncreditedSubmitted.length) {
+    issues.push(
+      `${uncreditedSubmitted.length} 项已提交证据缺少已完成的补件凭据（草稿/待核对/失败凭据不被认可）：${uncreditedSubmitted
+        .map((item) => item.name)
+        .join('、')}`
+    );
+  }
+  return issues;
 }

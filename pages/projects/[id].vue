@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { EvidenceStatus, ProjectInput, ProjectStatus } from '~/types/certification';
-import { validateEvidenceUpgrade, validateProjectInput, validateSubmission } from '~/services/validators';
+import { validateProjectInput, validateSubmissionWithCredentials } from '~/services/validators';
 import { useCertificationStore } from '~/stores/certification';
 
 const route = useRoute();
@@ -45,8 +45,6 @@ watch(
 const transitionStatus = ref<ProjectStatus>('under_review');
 const transitionReason = ref('');
 const editReason = ref('');
-const supplementNote = ref('');
-const selectedEvidence = ref<string[]>([]);
 
 const tabs = [
   { label: '证据文件', icon: 'i-heroicons-document-text' },
@@ -70,7 +68,9 @@ const transitionOptions = computed(() => {
   return [{ label: '重新打开审阅', value: 'under_review' }];
 });
 
-const blockingIssues = computed(() => (project.value ? validateSubmission(project.value) : []));
+const blockingIssues = computed(() =>
+  project.value ? validateSubmissionWithCredentials(project.value, store.completedTokenIds(id)) : []
+);
 
 function saveEditor() {
   message.value = '';
@@ -110,19 +110,6 @@ function updateEvidence(evidenceId: string, status: EvidenceStatus) {
   if (!project.value) return;
   store.updateEvidence(id, evidenceId, status, `审阅人将证据标记为${status}`);
   message.value = '证据审阅状态已更新。';
-}
-
-function bulkSupplement() {
-  if (!project.value) return;
-  const errors = validateEvidenceUpgrade(project.value, selectedEvidence.value, supplementNote.value);
-  if (errors.length) {
-    error.value = errors.join('；');
-    return;
-  }
-  const count = store.bulkSupplement(id, selectedEvidence.value, supplementNote.value);
-  selectedEvidence.value = [];
-  supplementNote.value = '';
-  message.value = `已将 ${count} 项证据更新至当前软件基线并重新提交。`;
 }
 </script>
 
@@ -215,9 +202,14 @@ function bulkSupplement() {
     <section v-else-if="activeTab === 1">
       <div class="mb-4">
         <h2 class="font-semibold">法规项目覆盖</h2>
-        <p class="mt-1 text-sm text-slate-500">按法规项展开证据、配置覆盖和阻断问题。</p>
+        <p class="mt-1 text-sm text-slate-500">按法规项展开证据、配置覆盖和阻断问题；覆盖只认已完成凭据。</p>
       </div>
-      <RegulationTree :regulations="project.regulations" :evidence="project.evidence" />
+      <RegulationTree
+        :regulations="project.regulations"
+        :evidence="project.evidence"
+        :completed-token-ids="store.completedTokenIds(id)"
+        strict
+      />
     </section>
 
     <section v-else-if="activeTab === 2" class="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
@@ -242,30 +234,7 @@ function bulkSupplement() {
         </div>
       </div>
 
-      <div class="border border-slate-200 bg-white p-5">
-        <h2 class="font-semibold">批量补件</h2>
-        <p class="mt-1 text-xs text-slate-500">将缺失、被拒或待重交证据更新到当前软件基线。</p>
-        <form class="mt-4 space-y-4" @submit.prevent="bulkSupplement">
-          <label
-            v-for="item in project.evidence.filter((evidence) => ['rejected', 'resubmit', 'missing'].includes(evidence.status))"
-            :key="item.id"
-            class="flex gap-3 border border-slate-200 p-3"
-          >
-            <input v-model="selectedEvidence" type="checkbox" :value="item.id" class="mt-1" />
-            <span>
-              <span class="block text-sm font-medium">{{ item.name }}</span>
-              <span class="mt-1 block text-xs text-slate-500">{{ item.id }} · 当前 SW {{ item.softwareVersion }}</span>
-            </span>
-          </label>
-          <p v-if="!project.evidence.some((evidence) => ['rejected', 'resubmit', 'missing'].includes(evidence.status))" class="text-sm text-slate-500">
-            当前没有待补件证据。
-          </p>
-          <UFormGroup label="补件说明">
-            <UTextarea v-model="supplementNote" :rows="3" placeholder="说明已完成的测试、配置覆盖和版本更新" />
-          </UFormGroup>
-          <UButton type="submit" color="primary" class="w-full justify-center">批量更新并重新提交</UButton>
-        </form>
-      </div>
+      <SupplementPanel :project="project" :actor="project.applicant" />
     </section>
 
     <section v-else class="border border-slate-200 bg-white p-5">
@@ -273,7 +242,17 @@ function bulkSupplement() {
       <div class="mt-5 space-y-5">
         <article v-for="entry in project.audit" :key="entry.id" class="audit-item">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <p class="text-sm font-medium">{{ entry.action }} · {{ entry.actor }}</p>
+            <p class="flex flex-wrap items-center gap-2 text-sm font-medium">
+              {{ entry.action }} · {{ entry.actor }}
+              <UBadge
+                v-if="entry.supplementTokenId"
+                :color="store.completedTokenIds(id).has(entry.supplementTokenId) ? 'green' : 'amber'"
+                variant="soft"
+              >
+                {{ store.completedTokenIds(id).has(entry.supplementTokenId) ? '凭据已完成' : '凭据未完成' }}
+                {{ entry.supplementTokenId }}
+              </UBadge>
+            </p>
             <span class="text-xs text-slate-500">{{ entry.createdAt.slice(0, 16).replace('T', ' ') }}</span>
           </div>
           <p class="mt-1 text-sm text-slate-600">{{ entry.detail }}</p>

@@ -1,12 +1,20 @@
 import { defineStore } from 'pinia';
 import { seedProjects } from '~/data/seed';
+import {
+  installCrossTabSync,
+  markStaleForProject,
+  onTokensChanged,
+  readProjects,
+  readTokens
+} from '~/services/supplement-ledger';
 import type {
   ApprovalProject,
   AuditEntry,
   EvidenceItem,
   ProjectInput,
   ProjectStatus,
-  ProjectVersion
+  ProjectVersion,
+  SupplementToken
 } from '~/types/certification';
 
 const STORAGE_KEY = 'vehicle-type-approval-projects-v1';
@@ -32,6 +40,7 @@ function audit(actor: string, action: string, detail: string): AuditEntry {
 export const useCertificationStore = defineStore('certification', {
   state: () => ({
     projects: cloneSeed(),
+    tokens: [] as SupplementToken[],
     hydrated: false
   }),
 
@@ -44,9 +53,16 @@ export const useCertificationStore = defineStore('certification', {
           .filter((item) => item.expiryDate)
           .map((item) => ({ project, evidence: item }))
           .filter(({ evidence }) => new Date(evidence.expiryDate!) <= new Date('2027-01-31'))
+      ),
+
+    /** 某项目已完成补件凭据的 ID 集合——法规覆盖与审计导出只认这些凭据。 */
+    completedTokenIds: (state) => (projectId: string) =>
+      new Set(
+        state.tokens
+          .filter((token) => token.projectId === projectId && token.status === 'completed')
+          .map((token) => token.id)
       )
   },
-
   actions: {
     hydrate() {
       if (this.hydrated || typeof localStorage === 'undefined') return;
@@ -56,12 +72,30 @@ export const useCertificationStore = defineStore('certification', {
       } catch {
         this.projects = cloneSeed();
       }
+      this.tokens = readTokens();
       this.hydrated = true;
+      // 凭据（含本标签页）发生任何变化时同步到 store，驱动 getter 和界面。
+      onTokensChanged(() => {
+        this.tokens = readTokens();
+      });
+      // 别的标签页提交补件或改动基线后，本标签页实时重载项目数据并核对凭据。
+      installCrossTabSync(() => {
+        this.projects = readProjects();
+        this.tokens = readTokens();
+      });
     },
 
     persist() {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(this.projects));
+      }
+    },
+
+    /** 补件凭据提交（在 localStorage 中原子写入）后，从存储重新读取项目数据。 */
+    reloadFromStorage() {
+      if (typeof localStorage !== 'undefined') {
+        this.projects = readProjects();
+        this.tokens = readTokens();
       }
     },
 
@@ -144,10 +178,18 @@ export const useCertificationStore = defineStore('certification', {
         project.audit.unshift(
           audit(project.applicant, '更新项目版本', `${changed.join('、')}；影响配置：${input.configuration}`)
         );
+        this.persist();
+        // 基线改动后，旧补件凭据立即失效并停在待核对（选择与说明保留）。
+        if (previous.maintenanceVersion !== input.maintenanceVersion || previous.softwareVersion !== input.softwareVersion) {
+          markStaleForProject(id, {
+            maintenanceVersion: input.maintenanceVersion,
+            softwareVersion: input.softwareVersion
+          });
+        }
       } else {
         project.audit.unshift(audit(project.applicant, '更新项目资料', reason));
+        this.persist();
       }
-      this.persist();
       return true;
     },
 
@@ -175,27 +217,6 @@ export const useCertificationStore = defineStore('certification', {
       project.audit.unshift(audit(project.reviewer, '更新证据状态', `${evidence.name}：${status}`));
       this.persist();
       return true;
-    },
-
-    bulkSupplement(projectId: string, evidenceIds: string[], note: string) {
-      const project = this.projects.find((item) => item.id === projectId);
-      if (!project) return 0;
-      let count = 0;
-      project.evidence.forEach((evidence) => {
-        if (!evidenceIds.includes(evidence.id)) return;
-        evidence.status = 'submitted';
-        evidence.softwareVersion = project.softwareVersion;
-        evidence.note = note;
-        evidence.updatedAt = new Date().toISOString();
-        count += 1;
-      });
-      if (count) {
-        project.progress = Math.min(95, project.progress + count * 4);
-        project.updatedAt = new Date().toISOString();
-        project.audit.unshift(audit(project.applicant, '批量补件', `${count} 项证据更新至 ${project.softwareVersion}。${note}`));
-        this.persist();
-      }
-      return count;
     },
 
     reset() {
